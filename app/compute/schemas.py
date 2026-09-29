@@ -38,10 +38,38 @@ class TaskClaim(BaseModel):
     lease_seconds: int = Field(default=60, ge=5, le=3600)
 
 
+class ArtifactManifest(BaseModel):
+    upload_id: str = Field(min_length=8, max_length=80)
+    path: str = Field(min_length=1, max_length=300)
+    filename: str = Field(min_length=1, max_length=200)
+    purpose: str = Field(min_length=1, max_length=200)
+    size_bytes: int = Field(ge=0, le=10 * 1024 * 1024 * 1024)
+    sha256: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
 class TaskResult(BaseModel):
     worker_id: str = Field(min_length=1, max_length=120)
     result: dict[str, Any]
     metrics: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[ArtifactManifest] = Field(default_factory=list, max_length=50)
+    receipt_key: str | None = Field(default=None, min_length=6, max_length=160)
+
+
+class ProjectMemberGrant(BaseModel):
+    project_code: str = Field(min_length=1, max_length=80)
+    member: str = Field(min_length=1, max_length=80)
+    role: Literal["teacher", "admin"] = "teacher"
+    granted_by: str = Field(min_length=1, max_length=120)
+
+
+class PublishResultRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(default="", max_length=1000)
+
+
+class WithdrawResultRequest(BaseModel):
+    actor: str = Field(min_length=1, max_length=120)
+    reason: str = Field(min_length=2, max_length=1000)
 
 
 class TaskFailure(BaseModel):

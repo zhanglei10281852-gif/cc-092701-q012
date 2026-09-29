@@ -259,6 +259,7 @@ CREATE TABLE IF NOT EXISTS compute_tasks (
     lease_owner TEXT NOT NULL DEFAULT '',
     lease_expires_at TEXT NOT NULL DEFAULT '',
     current_result_version INTEGER,
+    published_result_version INTEGER,
     last_error_code TEXT NOT NULL DEFAULT '',
     last_error_message TEXT NOT NULL DEFAULT '',
     version INTEGER NOT NULL DEFAULT 1,
@@ -277,10 +278,79 @@ CREATE TABLE IF NOT EXISTS compute_results (
     result_json TEXT NOT NULL,
     metrics_json TEXT NOT NULL DEFAULT '{}',
     result_digest TEXT NOT NULL,
+    lifecycle_state TEXT NOT NULL DEFAULT 'candidate' CHECK(lifecycle_state IN ('candidate','published','withdrawn')),
+    retention_until TEXT NOT NULL DEFAULT '',
+    published_at TEXT,
+    withdrawn_at TEXT,
+    withdraw_reason TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(task_id, version)
 );
+CREATE TABLE IF NOT EXISTS compute_result_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    receipt_key TEXT NOT NULL,
+    result_version INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, receipt_key)
+);
+CREATE TABLE IF NOT EXISTS compute_project_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_code TEXT NOT NULL,
+    member TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('teacher','admin')),
+    granted_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(project_code, member)
+);
+CREATE INDEX IF NOT EXISTS idx_compute_members_project ON compute_project_members(project_code,member);
+CREATE TABLE IF NOT EXISTS compute_artifact_blobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sha256 TEXT NOT NULL UNIQUE,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    storage_relpath TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS compute_artifact_staging (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    upload_id TEXT NOT NULL UNIQUE,
+    blob_id INTEGER REFERENCES compute_artifact_blobs(id) ON DELETE RESTRICT,
+    storage_relpath TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    sha256 TEXT NOT NULL,
+    uploaded_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_staging_expires ON compute_artifact_staging(expires_at);
+CREATE TABLE IF NOT EXISTS compute_result_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    result_version INTEGER NOT NULL,
+    blob_id INTEGER NOT NULL REFERENCES compute_artifact_blobs(id) ON DELETE RESTRICT,
+    declared_path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    declared_size INTEGER NOT NULL CHECK(declared_size >= 0),
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    sha256 TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'candidate' CHECK(state IN ('candidate','published','withdrawn')),
+    retention_until TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
+    withdrawn_at TEXT,
+    UNIQUE(task_id, result_version, filename),
+    FOREIGN KEY(task_id, result_version) REFERENCES compute_results(task_id, version) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_result_artifacts_version ON compute_result_artifacts(task_id,result_version);
+CREATE INDEX IF NOT EXISTS idx_result_artifacts_blob ON compute_result_artifacts(blob_id);
+CREATE INDEX IF NOT EXISTS idx_result_artifacts_state ON compute_result_artifacts(state,retention_until);
 CREATE TABLE IF NOT EXISTS compute_interventions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
@@ -359,10 +429,29 @@ def transaction(*, immediate: bool = False) -> Iterator[sqlite3.Connection]:
         connection.commit()
 
 
+def _ensure_compute_result_columns(connection: sqlite3.Connection) -> None:
+    """为既有库补齐 compute_results 的生命周期列（新建库已包含）。"""
+    existing = {row["name"] for row in connection.execute("PRAGMA table_info(compute_results)").fetchall()}
+    additions = {
+        "lifecycle_state": "TEXT NOT NULL DEFAULT 'candidate'",
+        "retention_until": "TEXT NOT NULL DEFAULT ''",
+        "published_at": "TEXT",
+        "withdrawn_at": "TEXT",
+        "withdraw_reason": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, declaration in additions.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE compute_results ADD COLUMN {name} {declaration}")
+    task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(compute_tasks)").fetchall()}
+    if "published_result_version" not in task_columns:
+        connection.execute("ALTER TABLE compute_tasks ADD COLUMN published_result_version INTEGER")
+
+
 def init_db() -> None:
     now = to_storage(utc_now())
     with transaction(immediate=True) as connection:
         connection.executescript(SCHEMA)
+        _ensure_compute_result_columns(connection)
         for code, name, resource, action in PERMISSIONS:
             connection.execute(
                 "INSERT OR IGNORE INTO permissions(code,name,resource,action) VALUES(?,?,?,?)",

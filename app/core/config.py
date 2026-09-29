@@ -27,6 +27,11 @@ class Settings:
     default_page_size: int
     audit_retention_days: int
     job_lease_seconds: int
+    artifact_store_path: Path
+    artifact_candidate_retention_days: int
+    artifact_published_retention_days: int
+    artifact_withdrawn_retention_days: int
+    artifact_temp_retention_hours: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -34,6 +39,8 @@ class Settings:
         database = Path(os.getenv("TOWNSHIP_DATABASE_PATH", str(default_database))).expanduser().resolve()
         if database.suffix.casefold() not in {".db", ".sqlite", ".sqlite3"}:
             raise ValidationError("数据库文件必须使用 .db、.sqlite 或 .sqlite3 后缀")
+        default_store = os.getenv("TOWNSHIP_ARTIFACT_STORE", "").strip()
+        artifact_store = Path(default_store).expanduser().resolve() if default_store else database.parent / "artifacts"
         return cls(
             database_path=database,
             session_ttl_minutes=_positive_integer("TOWNSHIP_SESSION_TTL_MINUTES", 480, maximum=43_200),
@@ -42,6 +49,11 @@ class Settings:
             default_page_size=_positive_integer("TOWNSHIP_DEFAULT_PAGE_SIZE", 20, maximum=100),
             audit_retention_days=_positive_integer("TOWNSHIP_AUDIT_RETENTION_DAYS", 365, maximum=3650),
             job_lease_seconds=_positive_integer("TOWNSHIP_JOB_LEASE_SECONDS", 60, maximum=3600),
+            artifact_store_path=artifact_store,
+            artifact_candidate_retention_days=_positive_integer("TOWNSHIP_ARTIFACT_CANDIDATE_RETENTION_DAYS", 7, maximum=3650),
+            artifact_published_retention_days=_positive_integer("TOWNSHIP_ARTIFACT_PUBLISHED_RETENTION_DAYS", 3650, maximum=36500),
+            artifact_withdrawn_retention_days=_positive_integer("TOWNSHIP_ARTIFACT_WITHDRAWN_RETENTION_DAYS", 30, maximum=3650),
+            artifact_temp_retention_hours=_positive_integer("TOWNSHIP_ARTIFACT_TEMP_RETENTION_HOURS", 24, maximum=2160),
         )
 
     def public_view(self) -> dict:
@@ -53,4 +65,9 @@ class Settings:
             "default_page_size": self.default_page_size,
             "audit_retention_days": self.audit_retention_days,
             "job_lease_seconds": self.job_lease_seconds,
+            "artifact_store_path": str(self.artifact_store_path),
+            "artifact_candidate_retention_days": self.artifact_candidate_retention_days,
+            "artifact_published_retention_days": self.artifact_published_retention_days,
+            "artifact_withdrawn_retention_days": self.artifact_withdrawn_retention_days,
+            "artifact_temp_retention_hours": self.artifact_temp_retention_hours,
         }

@@ -71,8 +71,117 @@ class ComputeRepository:
             params,
         ).fetchone()
 
+    def result_version(self, task_id: int, version: int) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_results WHERE task_id=? AND version=?", (task_id, version)).fetchone()
+
     def result_versions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_results WHERE task_id=? ORDER BY version", (task_id,)).fetchall()]
+
+    def receipt(self, task_id: int, receipt_key: str) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_result_receipts WHERE task_id=? AND receipt_key=?", (task_id, receipt_key)).fetchone()
+
+    def add_receipt(self, *, task_id: int, receipt_key: str, result_version: int, created_by: str, now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_result_receipts(task_id,receipt_key,result_version,created_by,created_at) VALUES(?,?,?,?,?)",
+            (task_id, receipt_key, result_version, created_by, now),
+        )
+
+    def insert_result(self, *, task_id: int, version: int, result: dict[str, Any], metrics: dict[str, Any], result_digest: str, created_by: str, now: str, lifecycle_state: str, retention_until: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_results(task_id,version,result_json,metrics_json,result_digest,lifecycle_state,retention_until,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (task_id, version, json.dumps(result, ensure_ascii=False, sort_keys=True), json.dumps(metrics, ensure_ascii=False, sort_keys=True), result_digest, lifecycle_state, retention_until, created_by, now),
+        )
+
+    def set_result_lifecycle(self, *, task_id: int, version: int, state: str, retention_until: str, published_at: str | None, withdrawn_at: str | None, withdraw_reason: str) -> None:
+        self.connection.execute(
+            "UPDATE compute_results SET lifecycle_state=?,retention_until=?,published_at=COALESCE(?,published_at),withdrawn_at=?,withdraw_reason=? WHERE task_id=? AND version=?",
+            (state, retention_until, published_at, withdrawn_at, withdraw_reason, task_id, version),
+        )
+
+    # ----- 成果文件：blob / 暂存 / 清单 -----
+
+    def blob_by_digest(self, sha256: str) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_artifact_blobs WHERE sha256=?", (sha256,)).fetchone()
+
+    def blob_by_id(self, blob_id: int) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_artifact_blobs WHERE id=?", (blob_id,)).fetchone()
+
+    def insert_blob(self, *, sha256: str, size_bytes: int, storage_relpath: str, now: str) -> int:
+        cursor = self.connection.execute(
+            "INSERT INTO compute_artifact_blobs(sha256,size_bytes,storage_relpath,created_at) VALUES(?,?,?,?)",
+            (sha256, size_bytes, storage_relpath, now),
+        )
+        return int(cursor.lastrowid)
+
+    def create_staging(self, *, upload_id: str, blob_id: int | None, storage_relpath: str, filename: str, purpose: str, size_bytes: int, sha256: str, uploaded_by: str, now: str, expires_at: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_artifact_staging(upload_id,blob_id,storage_relpath,filename,purpose,size_bytes,sha256,uploaded_by,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (upload_id, blob_id, storage_relpath, filename, purpose, size_bytes, sha256, uploaded_by, now, expires_at),
+        )
+
+    def staging_by_upload(self, upload_id: str) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_artifact_staging WHERE upload_id=?", (upload_id,)).fetchone()
+
+    def delete_staging(self, upload_id: str) -> None:
+        self.connection.execute("DELETE FROM compute_artifact_staging WHERE upload_id=?", (upload_id,))
+
+    def expired_staging(self, now: str) -> list[sqlite3.Row]:
+        return self.connection.execute("SELECT * FROM compute_artifact_staging WHERE expires_at<=? ORDER BY id", (now,)).fetchall()
+
+    def insert_result_artifact(self, *, task_id: int, result_version: int, blob_id: int, declared_path: str, filename: str, purpose: str, declared_size: int, size_bytes: int, sha256: str, state: str, retention_until: str, created_by: str, now: str) -> None:
+        self.connection.execute(
+            "INSERT INTO compute_result_artifacts(task_id,result_version,blob_id,declared_path,filename,purpose,declared_size,size_bytes,sha256,state,retention_until,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (task_id, result_version, blob_id, declared_path, filename, purpose, declared_size, size_bytes, sha256, state, retention_until, created_by, now, now),
+        )
+
+    def result_artifacts(self, task_id: int, version: int | None = None) -> list[dict[str, Any]]:
+        if version is None:
+            rows = self.connection.execute("SELECT * FROM compute_result_artifacts WHERE task_id=? ORDER BY result_version,id", (task_id,)).fetchall()
+        else:
+            rows = self.connection.execute("SELECT * FROM compute_result_artifacts WHERE task_id=? AND result_version=? ORDER BY id", (task_id, version)).fetchall()
+        return [dict(row) for row in rows]
+
+    def artifact_by_filename(self, task_id: int, version: int, filename: str) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_result_artifacts WHERE task_id=? AND result_version=? AND filename=?", (task_id, version, filename)).fetchone()
+
+    def artifact_by_id(self, artifact_id: int) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_result_artifacts WHERE id=?", (artifact_id,)).fetchone()
+
+    def set_artifacts_lifecycle(self, *, task_id: int, version: int, state: str, retention_until: str, published_at: str | None, withdrawn_at: str | None, now: str) -> None:
+        self.connection.execute(
+            "UPDATE compute_result_artifacts SET state=?,retention_until=?,published_at=COALESCE(?,published_at),withdrawn_at=?,updated_at=? WHERE task_id=? AND result_version=?",
+            (state, retention_until, published_at, withdrawn_at, now, task_id, version),
+        )
+
+    def unreferenced_blobs(self) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT b.* FROM compute_artifact_blobs b WHERE NOT EXISTS (SELECT 1 FROM compute_result_artifacts a WHERE a.blob_id=b.id) ORDER BY b.id"
+        ).fetchall()
+
+    def expired_result_artifacts(self, state: str, now: str) -> list[sqlite3.Row]:
+        return self.connection.execute(
+            "SELECT * FROM compute_result_artifacts WHERE state=? AND retention_until<>'' AND retention_until<=? ORDER BY id",
+            (state, now),
+        ).fetchall()
+
+    def delete_result_artifact(self, artifact_id: int) -> None:
+        self.connection.execute("DELETE FROM compute_result_artifacts WHERE id=?", (artifact_id,))
+
+    def blob_is_referenced(self, blob_id: int) -> bool:
+        return self.connection.execute("SELECT 1 FROM compute_result_artifacts WHERE blob_id=? LIMIT 1", (blob_id,)).fetchone() is not None
+
+    # ----- 项目成员授权 -----
+
+    def grant_project_member(self, *, project_code: str, member: str, role: str, granted_by: str, now: str) -> dict[str, Any]:
+        self.connection.execute(
+            "INSERT INTO compute_project_members(project_code,member,role,granted_by,created_at) VALUES(?,?,?,?,?) ON CONFLICT(project_code,member) DO UPDATE SET role=excluded.role,granted_by=excluded.granted_by",
+            (project_code, member, role, granted_by, now),
+        )
+        row = self.connection.execute("SELECT * FROM compute_project_members WHERE project_code=? AND member=?", (project_code, member)).fetchone()
+        return dict(row)
+
+    def project_member(self, project_code: str, member: str) -> sqlite3.Row | None:
+        return self.connection.execute("SELECT * FROM compute_project_members WHERE project_code=? AND member=?", (project_code, member)).fetchone()
 
     def interventions(self, task_id: int) -> list[dict[str, Any]]:
         return [dict(row) for row in self.connection.execute("SELECT * FROM compute_interventions WHERE task_id=? ORDER BY id", (task_id,)).fetchall()]
