@@ -76,6 +76,15 @@ def command_compute_demo() -> int:
     return 0 if task.status_code == 202 and claimed.status_code == 200 and claimed.json().get("task") else 1
 
 
+def command_purge_artifacts(dry_run: bool) -> int:
+    from app.compute.service import ComputeOperationsService
+
+    init_db()
+    report = ComputeOperationsService().purge_expired_artifacts("cli-retention", dry_run=dry_run)
+    print(json.dumps(report, ensure_ascii=False))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="compute-operations", description="科学计算任务运营服务维护入口")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -83,8 +92,17 @@ def main() -> int:
     subparsers.add_parser("check-db", help="检查数据库完整性")
     subparsers.add_parser("smoke", help="执行本地 API 冒烟检查")
     subparsers.add_parser("compute-demo", help="执行计算任务提交与领取演示")
+    purge_parser = subparsers.add_parser("purge-artifacts", help="清理超过保留期且无成绩引用的成果文件")
+    purge_parser.add_argument("--dry-run", action="store_true", help="只报告将清理的内容，不实际删除")
     args = parser.parse_args()
-    return {"init-db": command_init, "check-db": command_check, "smoke": command_smoke, "compute-demo": command_compute_demo}[args.command]()
+    commands = {
+        "init-db": lambda: command_init(),
+        "check-db": lambda: command_check(),
+        "smoke": lambda: command_smoke(),
+        "compute-demo": lambda: command_compute_demo(),
+        "purge-artifacts": lambda: command_purge_artifacts(args.dry_run),
+    }
+    return commands[args.command]()
 
 
 if __name__ == "__main__":

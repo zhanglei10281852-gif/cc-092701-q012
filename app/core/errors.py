@@ -36,6 +36,11 @@ class ValidationError(DomainError):
     code = "validation_error"
 
 
+class GoneError(DomainError):
+    status_code = 410
+    code = "resource_gone"
+
+
 class AccountLockedError(AuthenticationError):
     code = "account_locked"
 

@@ -277,10 +277,100 @@ CREATE TABLE IF NOT EXISTS compute_results (
     result_json TEXT NOT NULL,
     metrics_json TEXT NOT NULL DEFAULT '{}',
     result_digest TEXT NOT NULL,
+    publish_state TEXT NOT NULL DEFAULT 'candidate' CHECK(publish_state IN ('candidate','published','withdrawn')),
+    published_at TEXT,
+    published_by TEXT NOT NULL DEFAULT '',
+    withdrawn_at TEXT,
+    withdrawn_by TEXT NOT NULL DEFAULT '',
+    withdraw_reason TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     UNIQUE(task_id, version)
 );
+CREATE TABLE IF NOT EXISTS compute_result_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    result_version INTEGER NOT NULL,
+    action TEXT NOT NULL CHECK(action IN ('published','withdrawn')),
+    actor TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_result_events ON compute_result_events(task_id,result_version,id);
+CREATE TABLE IF NOT EXISTS compute_artifact_blobs (
+    content_sha256 TEXT PRIMARY KEY,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    storage_relpath TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS compute_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    result_version INTEGER NOT NULL,
+    receipt_key TEXT NOT NULL DEFAULT '',
+    worker_path TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    content_sha256 TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT '',
+    lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('candidate','published','withdrawn')),
+    blob_sha256 TEXT REFERENCES compute_artifact_blobs(content_sha256),
+    retention_expires_at TEXT NOT NULL,
+    last_verified_at TEXT NOT NULL,
+    purged_at TEXT,
+    purge_reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(task_id, result_version, filename)
+);
+CREATE INDEX IF NOT EXISTS idx_compute_artifacts_version ON compute_artifacts(task_id,result_version,id);
+CREATE INDEX IF NOT EXISTS idx_compute_artifacts_retention ON compute_artifacts(lifecycle_state,retention_expires_at) WHERE purged_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_compute_artifacts_blob ON compute_artifacts(blob_sha256);
+CREATE TABLE IF NOT EXISTS compute_artifact_staging (
+    staging_key TEXT PRIMARY KEY,
+    worker_id TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    purpose TEXT NOT NULL DEFAULT '',
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    content_sha256 TEXT NOT NULL,
+    blob_sha256 TEXT NOT NULL REFERENCES compute_artifact_blobs(content_sha256),
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    consumed_by_task INTEGER,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_staging_expires ON compute_artifact_staging(expires_at);
+CREATE TABLE IF NOT EXISTS compute_task_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,
+    receipt_key TEXT NOT NULL,
+    request_hash TEXT NOT NULL,
+    result_version INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(task_id, receipt_key)
+);
+CREATE TABLE IF NOT EXISTS compute_project_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_code TEXT NOT NULL,
+    member TEXT NOT NULL,
+    member_role TEXT NOT NULL CHECK(member_role IN ('teacher','observer')),
+    granted_by TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(project_code, member)
+);
+CREATE TABLE IF NOT EXISTS compute_artifact_downloads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id INTEGER NOT NULL REFERENCES compute_artifacts(id) ON DELETE CASCADE,
+    requester TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK(outcome IN ('allowed','denied')),
+    decision_code TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_compute_downloads_artifact ON compute_artifact_downloads(artifact_id,id);
 CREATE TABLE IF NOT EXISTS compute_interventions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id INTEGER NOT NULL REFERENCES compute_tasks(id) ON DELETE CASCADE,

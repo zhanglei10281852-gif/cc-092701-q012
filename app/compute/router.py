@@ -1,8 +1,24 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
+from fastapi.responses import Response
 
-from app.compute.schemas import BatchOperation, CancelRequest, PriorityRequest, QuotaSet, RetryRequest, TaskClaim, TaskFailure, TaskResult, TaskSubmit, TemplateCreate
+from app.compute.schemas import (
+    ArtifactStaging,
+    BatchOperation,
+    CancelRequest,
+    PriorityRequest,
+    ProjectMemberGrant,
+    PublishRequest,
+    QuotaSet,
+    RetryRequest,
+    TaskClaim,
+    TaskFailure,
+    TaskResult,
+    TaskSubmit,
+    TemplateCreate,
+    WithdrawRequest,
+)
 from app.compute.service import ComputeOperationsService
 
 router = APIRouter(prefix="/api/compute", tags=["科学计算任务运营"])
@@ -54,7 +70,10 @@ def heartbeat(task_id: int, payload: TaskClaim):
 
 @router.post("/tasks/{task_id}/complete")
 def complete_task(task_id: int, payload: TaskResult):
-    return service().complete(task_id, payload.worker_id, payload.result, payload.metrics)
+    return service().complete(
+        task_id, payload.worker_id, payload.result, payload.metrics,
+        artifacts=payload.artifacts, receipt_key=payload.receipt_key,
+    )
 
 
 @router.post("/tasks/{task_id}/fail")
@@ -80,6 +99,53 @@ def set_priority(task_id: int, payload: PriorityRequest):
 @router.post("/tasks/batch")
 def batch_operation(payload: BatchOperation):
     return service().batch_operation(payload.model_dump())
+
+
+@router.post("/tasks/{task_id}/results/{version}/publish")
+def publish_result(task_id: int, version: int, payload: PublishRequest):
+    return service().publish_result(task_id, version, payload.actor, payload.reason)
+
+
+@router.post("/tasks/{task_id}/results/{version}/withdraw")
+def withdraw_result(task_id: int, version: int, payload: WithdrawRequest):
+    return service().withdraw_result(task_id, version, payload.actor, payload.reason)
+
+
+@router.put("/project-members")
+def grant_project_member(payload: ProjectMemberGrant):
+    return service().grant_project_member(payload.model_dump())
+
+
+@router.post("/artifacts/staging", status_code=201)
+def stage_artifact(payload: ArtifactStaging):
+    return service().stage_artifact(payload)
+
+
+@router.get("/artifacts/{artifact_id}/access")
+def explain_artifact_access(artifact_id: int, requester: str = Query(..., min_length=1)):
+    """说明成果文件属于哪个成绩版本，以及当前请求者为何被允许或拒绝下载。"""
+    return service().explain_artifact_access(artifact_id, requester)
+
+
+@router.get("/artifacts/{artifact_id}/download")
+def download_artifact(artifact_id: int, requester: str = Query(..., min_length=1)):
+    data, artifact, decision = service().download_artifact(artifact_id, requester)
+    quoted_filename = artifact["filename"].replace('"', "")
+    return Response(
+        content=data,
+        media_type=artifact["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{quoted_filename}"',
+            "X-Artifact-Id": str(artifact["id"]),
+            "X-Result-Version": str(artifact["result_version"]),
+            "X-Access-Decision": decision["decision_code"],
+        },
+    )
+
+
+@router.post("/retention/purge-artifacts")
+def purge_expired_artifacts(actor: str = Query(default="retention-worker", min_length=1), dry_run: bool = Query(default=False)):
+    return service().purge_expired_artifacts(actor, dry_run=dry_run)
 
 
 @router.post("/recovery/expired-leases")
